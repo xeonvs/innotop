@@ -22,7 +22,7 @@
 use strict;
 use warnings FATAL => 'all';
 
-our $VERSION = '1.16.0';
+our $VERSION = '1.16.1';
 
 # Find the home directory; it's different on different OSes.
 our $homepath = $ENV{HOME} || $ENV{HOMEPATH} || $ENV{USERPROFILE} || '.';
@@ -5850,6 +5850,9 @@ sub display_Q {
    # Get the data
    my @cxns             = get_connections();
    my @full_processlist = get_full_processlist(@cxns);
+   my %raw_query_for    = map {
+      query_analysis_key($_->{cxn}, $_->{id}) => $_->{info}
+   } grep { defined $_->{info} } @full_processlist;
 
    # Create header
    if ( $wanted{q_header} ) {
@@ -5892,6 +5895,12 @@ sub display_Q {
       my %hash;
       @hash{ qw(cxn id db query time user host) }
          = @{$_}{ qw(cxn mysql_thread_id db info time user hostname) };
+      $hash{query} = query_analysis_query_from(
+         \%raw_query_for,
+         $hash{cxn},
+         $hash{id},
+         $hash{query},
+      );
       # time is in seconds-to-time format; convert into something
       # ascii-sortable.
       $hash{time} = sprintf('%012s', $hash{time} =~ m/^([^.]*)/);
@@ -5968,6 +5977,7 @@ sub display_T {
 
    my @t_header;
    my @innodb_transactions;
+   my %raw_query_for;
    my %rows_for = (
       t_header            => \@t_header,
       innodb_transactions => \@innodb_transactions,
@@ -6004,6 +6014,9 @@ sub display_T {
             my $pre_txn = $pre_txns{$thd_id} || $cur_txn;
             my $hash    = extract_values($cur_txn, $cur_txn, $pre_txn, 'innodb_transactions');
             $hash->{cxn} = $cxn;
+            $raw_query_for{query_analysis_key($cxn, $hash->{mysql_thread_id})}
+               = $cur_txn->{query_text}
+               if defined $cur_txn->{query_text};
             push @innodb_transactions, $hash;
          }
       }
@@ -6024,6 +6037,12 @@ sub display_T {
       my %hash;
       @hash{ qw(cxn id db query time user host) }
          = @{$_}{ qw(cxn mysql_thread_id db query_text active_secs user hostname) };
+      $hash{query} = query_analysis_query_from(
+         \%raw_query_for,
+         $hash{cxn},
+         $hash{id},
+         $hash{query},
+      );
       \%hash;
    } @{$rows_for{innodb_transactions}};
 
@@ -10098,6 +10117,21 @@ sub analyze_query {
       print "\n";
       $action = pause('Press e to explain, a to analyze, j for JSON, t for TREE, f for full query, o for optimized query');
    } while ( exists($actions{$action}) );
+}
+
+# query_analysis_key {{{3
+sub query_analysis_key {
+   my ( $cxn, $id ) = @_;
+   return join("\0", defined $cxn ? $cxn : '', defined $id ? $id : '');
+}
+
+# query_analysis_query_from {{{3
+sub query_analysis_query_from {
+   my ( $raw_query_for, $cxn, $id, $fallback ) = @_;
+   my $key = query_analysis_key($cxn, $id);
+   return $raw_query_for->{$key}
+      if exists $raw_query_for->{$key} && defined $raw_query_for->{$key};
+   return $fallback;
 }
 
 # inc {{{3

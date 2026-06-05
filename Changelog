@@ -1,5 +1,8 @@
 Changelog for innotop:
 
+2026-06-05: version 1.16.1
+	* Keep raw query text for EXPLAIN actions when display sanitization replaces literals.
+
 2026-05-21: version 1.16.0
 	* Rework query EXPLAIN compatibility for modern MySQL.
 	* Add JSON and TREE EXPLAIN formats in query analysis.

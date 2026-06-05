@@ -34,7 +34,7 @@ require "innotop";
       return bless { NAME_lc => $columns, rows => $rows, pos => 0 }, $class;
    }
    sub fetchrow_hashref {
-      my ( $self ) = @_;
+      my ( $self, undef ) = @_;
       return if $self->{pos} >= @{ $self->{rows} };
       return $self->{rows}->[ $self->{pos}++ ];
    }
@@ -120,6 +120,56 @@ rewrite_is(
    0,
    'SELECT `from` FROM src WHERE txt = "INSERT INTO x SELECT y"',
    'quoted strings and identifiers in SELECT',
+);
+
+my $cyrillic_regexp_query =
+   "SELECT COUNT(*) FROM sample_texts WHERE COALESCE(body, '') REGEXP '[А-Яа-я]' AND COALESCE(body, '') NOT REGEXP '[A-Za-z]'";
+
+rewrite_is(
+   $cyrillic_regexp_query,
+   0,
+   $cyrillic_regexp_query,
+   'SELECT with non-ASCII REGEXP literal',
+);
+
+rewrite_is(
+   "SELECT COUNT(*) FROM sample_texts WHERE BINARY body REGEXP '[A-Z]'",
+   0,
+   "SELECT COUNT(*) FROM sample_texts WHERE BINARY body REGEXP '[A-Z]'",
+   'SELECT with BINARY string operator',
+);
+
+rewrite_is(
+   "SELECT COUNT(*) FROM sample_texts WHERE body REGEXP BINARY '[A-Z]'",
+   0,
+   "SELECT COUNT(*) FROM sample_texts WHERE body REGEXP BINARY '[A-Z]'",
+   'SELECT with REGEXP BINARY operator',
+);
+
+rewrite_is(
+   "SELECT CAST(body AS BINARY) FROM sample_texts WHERE id = 1",
+   0,
+   "SELECT CAST(body AS BINARY) FROM sample_texts WHERE id = 1",
+   'SELECT with CAST AS BINARY',
+);
+
+rewrite_is(
+   "SELECT STRING_TO_VECTOR('[1, 2, 3]') AS embedding",
+   0,
+   "SELECT STRING_TO_VECTOR('[1, 2, 3]') AS embedding",
+   'SELECT with MySQL VECTOR literal helper',
+);
+
+rewrite_is(
+   "CREATE TABLE vector_dst (embedding VECTOR(3)) AS SELECT STRING_TO_VECTOR('[1, 2, 3]') AS embedding",
+   1,
+   "SELECT STRING_TO_VECTOR('[1, 2, 3]') AS embedding",
+   'CREATE TABLE with MySQL VECTOR column rewrites SELECT part',
+);
+
+rewrite_is_undef(
+   "CREATE TABLE vector_dst (embedding VECTOR(3))",
+   'CREATE TABLE with MySQL VECTOR column and no SELECT',
 );
 
 rewrite_is_undef(
@@ -279,6 +329,91 @@ is(
    "EXPLAIN EXTENDED\nSELECT 1",
    'MariaDB optimized query keeps EXPLAIN EXTENDED',
 );
+
+my @raw_traditional_cases = (
+   [ '5.0.96',          "EXPLAIN\n$cyrillic_regexp_query" ],
+   [ '5.7.44',          "EXPLAIN PARTITIONS\n$cyrillic_regexp_query" ],
+   [ '8.0.45',          "EXPLAIN FORMAT=TRADITIONAL\n$cyrillic_regexp_query" ],
+   [ '9.7.0',           "EXPLAIN FORMAT=TRADITIONAL\n$cyrillic_regexp_query" ],
+   [ '10.11.0-MariaDB', "EXPLAIN PARTITIONS\n$cyrillic_regexp_query" ],
+);
+
+foreach my $case ( @raw_traditional_cases ) {
+   my ( $version, $expected ) = @$case;
+   is(
+      explain_sql_for(dbh_for($version), $cyrillic_regexp_query, 'TRADITIONAL'),
+      $expected,
+      "$version traditional EXPLAIN keeps raw non-ASCII REGEXP literal",
+   );
+}
+
+foreach my $version ( qw(8.0.45 9.7.0 10.11.0-MariaDB) ) {
+   is(
+      explain_sql_for(dbh_for($version), $cyrillic_regexp_query, 'JSON'),
+      "EXPLAIN FORMAT=JSON\n$cyrillic_regexp_query",
+      "$version JSON EXPLAIN keeps raw non-ASCII REGEXP literal",
+   );
+}
+
+foreach my $version ( qw(8.0.45 9.7.0) ) {
+   is(
+      explain_sql_for(dbh_for($version), $cyrillic_regexp_query, 'TREE'),
+      "EXPLAIN FORMAT=TREE\n$cyrillic_regexp_query",
+      "$version TREE EXPLAIN keeps raw non-ASCII REGEXP literal",
+   );
+
+   is(
+      explain_analyze_sql_for(dbh_for($version), $cyrillic_regexp_query),
+      "EXPLAIN ANALYZE FORMAT=TREE\n$cyrillic_regexp_query",
+      "$version EXPLAIN ANALYZE keeps raw non-ASCII REGEXP literal",
+   );
+}
+
+is(
+   explain_analyze_sql_for(dbh_for('8.0.18'), $cyrillic_regexp_query),
+   "EXPLAIN ANALYZE\n$cyrillic_regexp_query",
+   'MySQL 8.0.18 EXPLAIN ANALYZE keeps raw non-ASCII REGEXP literal',
+);
+
+my @raw_optimized_cases = (
+   [ '5.7.44',          "EXPLAIN EXTENDED\n$cyrillic_regexp_query" ],
+   [ '8.0.45',          "EXPLAIN FORMAT=TRADITIONAL\n$cyrillic_regexp_query" ],
+   [ '9.7.0',           "EXPLAIN FORMAT=TRADITIONAL\n$cyrillic_regexp_query" ],
+   [ '10.11.0-MariaDB', "EXPLAIN EXTENDED\n$cyrillic_regexp_query" ],
+);
+
+foreach my $case ( @raw_optimized_cases ) {
+   my ( $version, $expected ) = @$case;
+   is(
+      explain_sql_for_optimized_query(dbh_for($version), $cyrillic_regexp_query),
+      $expected,
+      "$version optimized query EXPLAIN keeps raw non-ASCII REGEXP literal",
+   );
+}
+
+is(
+   explain_analyze_sql_for(dbh_for('10.11.0-MariaDB'), $cyrillic_regexp_query),
+   "ANALYZE\n$cyrillic_regexp_query",
+   'MariaDB ANALYZE keeps raw non-ASCII REGEXP literal',
+);
+
+{
+   my $raw_query = "SELECT COUNT(*) FROM sample_texts WHERE body REGEXP '[А-Яа-я]'";
+   my $display_query = no_ctrl_char($raw_query);
+   my %raw_query_for = ( query_analysis_key('test-cxn', 123) => $raw_query );
+
+   isnt($display_query, $raw_query, 'screen query is sanitized for display');
+   is(
+      query_analysis_query_from(\%raw_query_for, 'test-cxn', 123, $display_query),
+      $raw_query,
+      'query analysis prefers raw processlist query over sanitized display query',
+   );
+   is(
+      query_analysis_query_from(\%raw_query_for, 'test-cxn', 124, $display_query),
+      $display_query,
+      'query analysis falls back to display query without a raw match',
+   );
+}
 
 my %use_sql_for = (
    '0'                 => 'USE `0`',

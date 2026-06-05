@@ -3,7 +3,7 @@
 #
 Name:      innotop
 Summary:   A MySQL and InnoDB monitor program.
-Version:   1.16.0
+Version:   1.16.1
 Release:   1%{?dist}
 Vendor:    Baron Schwartz <baron@percona.com>
 Packager:  Frederic Descamps <lefred@percona.com>
@@ -122,6 +122,9 @@ find %{buildroot}%{_prefix}             \
 %defattr(-,root,root)
 
 %changelog
+* Fri Jun 05 2026 Innotop Developers <eslocombe@gmail.com> - 1.16.1-1
+ - Keep raw query text for EXPLAIN actions when display sanitization replaces literals
+
 * Thu May 21 2026 Innotop Developers <eslocombe@gmail.com> - 1.16.0-1
  - Rework query EXPLAIN compatibility for modern MySQL
  - Add runtime EXPLAIN ANALYZE support in query analysis
